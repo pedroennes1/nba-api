@@ -45,4 +45,4 @@ print(f"✓ Fetched {len(df_games)} game records")
 
 df_teams.to_csv("nba_teams.csv", index=False)
 df_games.to_csv("nba_games.csv", index=False)
-print("✓ Saved CsVs")
+print("✓ Saved CSVs")
