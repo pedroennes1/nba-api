@@ -18,7 +18,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install nba_api pandas supabase python-dotenv requests
+        run: pip install --no-cache-dir nba_api pandas supabase python-dotenv requests
 
       - name: Run data refresh
         env:
