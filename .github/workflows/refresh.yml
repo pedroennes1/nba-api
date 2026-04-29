@@ -2,8 +2,8 @@ name: Daily NBA Data Refresh
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # runs every day at 6am UTC
-  workflow_dispatch:  # allows manual trigger
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   refresh:
@@ -18,10 +18,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install nba_api pandas supabase python-dotenv
+        run: pip install nba_api pandas supabase python-dotenv requests
 
       - name: Run data refresh
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
         run: python3 fetch_nba_data.py
