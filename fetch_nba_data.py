@@ -1,14 +1,30 @@
 from nba_api.stats.endpoints import leaguegamefinder
 from nba_api.stats.static import teams
+from nba_api.library.http import NBAStatsHTTP
 import pandas as pd
 import time
+
+# Add headers to mimic a real browser
+NBAStatsHTTP.HEADERS = {
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'x-nba-stats-origin': 'stats',
+    'x-nba-stats-token': 'true',
+    'Referer': 'https://www.nba.com/',
+    'Connection': 'keep-alive',
+    'Pragma': 'no-cache',
+    'Cache-Control': 'no-cache',
+}
 
 # ── 1. Get all NBA teams ──────────────────────────────────────────
 all_teams = teams.get_teams()
 df_teams = pd.DataFrame(all_teams)
 print(f"✓ Found {len(df_teams)} teams")
 
-# ── 2. Fetch game logs for the last 5 seasons ────────────────────
+# ── 2. Fetch game logs ────────────────────────────────────────────
 seasons = ["2024-25", "2023-24", "2022-23", "2021-22", "2020-21"]
 all_games = []
 
@@ -28,9 +44,8 @@ for season in seasons:
             break
         except Exception as e:
             print(f"  Attempt {attempt+1} failed: {e}")
-            time.sleep(10)
-
-    time.sleep(3)
+            time.sleep(15)
+    time.sleep(5)
 
 df_games = pd.concat(all_games, ignore_index=True)
 print(f"✓ Fetched {len(df_games)} game records")
