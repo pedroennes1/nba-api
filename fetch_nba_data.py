@@ -14,21 +14,27 @@ all_games = []
 
 for season in seasons:
     print(f"  Fetching {season}...")
-    gamefinder = leaguegamefinder.LeagueGameFinder(
-        season_nullable=season,
-        league_id_nullable="00"   # 00 = NBA
-    )
-    games = gamefinder.get_data_frames()[0]
-    all_games.append(games)
-    time.sleep(1)   # be polite to the API
+    retries = 3
+    for attempt in range(retries):
+        try:
+            gamefinder = leaguegamefinder.LeagueGameFinder(
+                season_nullable=season,
+                league_id_nullable="00",
+                timeout=60
+            )
+            games = gamefinder.get_data_frames()[0]
+            all_games.append(games)
+            print(f"  ✓ {season} done")
+            break
+        except Exception as e:
+            print(f"  Attempt {attempt+1} failed: {e}")
+            time.sleep(10)
+
+    time.sleep(3)
 
 df_games = pd.concat(all_games, ignore_index=True)
-print(f"✓ Fetched {len(df_games)} game records across {len(seasons)} seasons")
-
-# ── 3. Preview & save locally ────────────────────────────────────
-print("\nSample columns:", df_games.columns.tolist())
-print(df_games.head(3))
+print(f"✓ Fetched {len(df_games)} game records")
 
 df_teams.to_csv("nba_teams.csv", index=False)
 df_games.to_csv("nba_games.csv", index=False)
-print("\n✓ Saved nba_teams.csv and nba_games.csv")
+print("✓ Saved CSVs")
