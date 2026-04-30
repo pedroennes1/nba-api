@@ -25,10 +25,9 @@ _supabase = None
 def get_supabase():
     global _supabase
     if _supabase is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
-        if not url or not key:
-            raise Exception("Supabase credentials not found")
+        url = os.getenv("SUPABASE_URL") or "https://qvhupmldwenihkxipeqi.supabase.co"
+        key = os.getenv("SUPABASE_KEY") or "SUPABASE_KEY=sb_publishable_OC1q3aS2LqEpB7UU6y_Y3Q_vpojrHdT"
+
         _supabase = create_client(url, key)
     return _supabase
 
