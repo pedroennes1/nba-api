@@ -17,11 +17,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load model
 with open("nba_model.pkl", "rb") as f:
     model = pickle.load(f)
 
-# Supabase client - lazy initialization
 _supabase = None
 
 def get_supabase():
@@ -55,10 +53,8 @@ def get_team_stats(team_abbr):
         .ilike("team_abbreviation", team_abbr)\
         .eq("season_id", "22024")\
         .execute()
-
     if not result.data:
         return None
-
     stats = result.data
     return {
         "fg_pct": sum(s["fg_pct"] for s in stats) / len(stats),
@@ -70,6 +66,13 @@ def get_team_stats(team_abbr):
         "blk": sum(s["blk"] for s in stats) / len(stats),
         "tov": sum(s["tov"] for s in stats) / len(stats),
         "pf": sum(s["pf"] for s in stats) / len(stats),
+    }
+
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "SUPABASE_URL": os.getenv("SUPABASE_URL", "NOT FOUND"),
+        "SUPABASE_KEY_LENGTH": len(os.getenv("SUPABASE_KEY", ""))
     }
 
 @app.get("/today-games")
@@ -95,7 +98,7 @@ def today_games():
         return {"games": result}
     except Exception as e:
         return {"error": str(e), "games": []}
-    
+
 @app.post("/predict")
 def predict(stats: GameStats):
     features = [[
@@ -113,10 +116,8 @@ def predict(stats: GameStats):
 def predict_matchup(request: MatchupRequest):
     home_stats = get_team_stats(request.home_team)
     away_stats = get_team_stats(request.away_team)
-
     if not home_stats or not away_stats:
         return {"error": "Could not find stats for one or both teams"}
-
     home_features = [[
         home_stats["fg_pct"], home_stats["fg3_pct"], home_stats["ft_pct"],
         home_stats["reb"], home_stats["ast"], home_stats["stl"],
@@ -127,14 +128,11 @@ def predict_matchup(request: MatchupRequest):
         away_stats["reb"], away_stats["ast"], away_stats["stl"],
         away_stats["blk"], away_stats["tov"], away_stats["pf"]
     ]]
-
     home_prob = model.predict_proba(home_features)[0]
     away_prob = model.predict_proba(away_features)[0]
-
     home_win = round(float(home_prob[1]) * 100, 1)
     away_win = round(float(away_prob[1]) * 100, 1)
     total = home_win + away_win
-
     return {
         "home_win_probability": round((home_win / total) * 100, 1),
         "away_win_probability": round((away_win / total) * 100, 1),
