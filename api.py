@@ -80,26 +80,10 @@ def today_games():
             league_id="00"
         )
         df = scoreboard.get_data_frames()[0]
-        print("Columns:", df.columns.tolist())
-        result = []
-        for _, game in df.iterrows():
-            home = ""
-            away = ""
-            for col in df.columns:
-                if "HOME" in col and "ABBREV" in col:
-                    home = str(game[col])
-                if "VISIT" in col and "ABBREV" in col:
-                    away = str(game[col])
-            result.append({
-                "game_id": str(game["GAME_ID"]),
-                "home_team": home,
-                "away_team": away,
-                "status": str(game["GAME_STATUS_TEXT"]),
-            })
-        return {"games": result}
+        return {"columns": df.columns.tolist(), "sample": df.iloc[0].to_dict() if len(df) > 0 else {}}
     except Exception as e:
-        return {"error": str(e), "games": []}
-
+        return {"error": str(e)}
+    
 @app.post("/predict")
 def predict(stats: GameStats):
     features = [[
