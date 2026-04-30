@@ -21,11 +21,18 @@ app.add_middleware(
 with open("nba_model.pkl", "rb") as f:
     model = pickle.load(f)
 
-# Supabase client
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
+# Supabase client - lazy initialization
+_supabase = None
+
+def get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        if not url or not key:
+            raise Exception("Supabase credentials not found")
+        _supabase = create_client(url, key)
+    return _supabase
 
 class GameStats(BaseModel):
     fg_pct: float
@@ -43,7 +50,7 @@ class MatchupRequest(BaseModel):
     away_team: str
 
 def get_team_stats(team_abbr):
-    result = supabase.table("games")\
+    result = get_supabase().table("games")\
         .select("fg_pct, fg3_pct, ft_pct, reb, ast, stl, blk, tov, pf")\
         .ilike("team_abbreviation", team_abbr)\
         .eq("season_id", "22024")\
