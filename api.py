@@ -43,14 +43,8 @@ class MatchupRequest(BaseModel):
     home_team: str
     away_team: str
 
-def get_team_rolling_stats(team_abbr: str, before_date: str = None):
-    """
-    Returns rolling 15-game averages for a team.
-    If before_date is provided (YYYY-MM-DD), only uses games before that date.
-    """
+def get_team_rolling_stats(team_abbr: str):
     sb = get_supabase()
-
-    # Fetch recent games for this team — grab more than WINDOW so we have enough
     query = (
         sb.table("games")
         .select("game_date, fg_pct, fg3_pct, ft_pct, reb, oreb, dreb, ast, stl, blk, tov, pf, pts, matchup, game_id")
@@ -59,18 +53,12 @@ def get_team_rolling_stats(team_abbr: str, before_date: str = None):
         .order("game_date", desc=True)
         .limit(WINDOW + 5)
     )
-
-    if before_date:
-        query = query.lt("game_date", before_date)
-
     result = query.execute()
 
     if not result.data or len(result.data) < 5:
         return None
 
     games = result.data
-
-    # For net_rating we need opponent pts — fetch those too
     game_ids = [g["game_id"] for g in games]
     opp_result = (
         sb.table("games")
@@ -101,7 +89,6 @@ def get_team_rolling_stats(team_abbr: str, before_date: str = None):
             "net_rating": net_rating,
         })
 
-    # Average across last WINDOW games (already sorted desc, so rows[0] is most recent)
     avgs = {}
     for feat in ROLLING_FEATURES:
         vals = [r[feat] for r in rows if r[feat] is not None]
@@ -109,14 +96,45 @@ def get_team_rolling_stats(team_abbr: str, before_date: str = None):
 
     return avgs
 
+def get_team_scoring_stats(team_abbr: str):
+    """Returns mean and std of points scored and allowed over last 20 games."""
+    sb = get_supabase()
+    result = (
+        sb.table("games")
+        .select("pts, game_id")
+        .ilike("team_abbreviation", team_abbr)
+        .eq("season_id", "22024")
+        .order("game_date", desc=True)
+        .limit(20)
+        .execute()
+    )
+    if not result.data or len(result.data) < 5:
+        return None
+
+    pts_list = [r["pts"] for r in result.data if r["pts"] is not None]
+    game_ids = [r["game_id"] for r in result.data]
+
+    opp_result = (
+        sb.table("games")
+        .select("game_id, pts")
+        .in_("game_id", game_ids)
+        .not_.ilike("team_abbreviation", team_abbr)
+        .execute()
+    )
+    opp_pts_map = {r["game_id"]: r["pts"] for r in (opp_result.data or [])}
+    opp_pts_list = [opp_pts_map[r["game_id"]] for r in result.data if opp_pts_map.get(r["game_id"])]
+
+    return {
+        "pts_mean": float(np.mean(pts_list)),
+        "pts_std": float(np.std(pts_list)),
+        "pts_allowed_mean": float(np.mean(opp_pts_list)) if opp_pts_list else None,
+        "pts_allowed_std": float(np.std(opp_pts_list)) if opp_pts_list else None,
+    }
+
 def build_feature_vector(home_stats: dict, away_stats: dict) -> list:
-    """
-    Builds the feature vector in the same order used during training:
-    [diff_features..., raw_home_features..., is_home]
-    """
     diff = [home_stats[f] - away_stats[f] for f in ROLLING_FEATURES]
     raw_home = [home_stats[f] for f in ROLLING_FEATURES]
-    return diff + raw_home + [1]  # is_home = 1 for home team
+    return diff + raw_home + [1]
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -172,7 +190,82 @@ def predict_matchup(request: MatchupRequest):
         "model_version": "2.0"
     }
 
-# Keep /predict endpoint for backwards compatibility (uses home team stats only, no matchup context)
+@app.post("/predict-score")
+def predict_score(request: MatchupRequest):
+    # Get rolling stats for win probability
+    home_stats = get_team_rolling_stats(request.home_team)
+    away_stats = get_team_rolling_stats(request.away_team)
+
+    if not home_stats:
+        return {"error": f"Could not find stats for {request.home_team}"}
+    if not away_stats:
+        return {"error": f"Could not find stats for {request.away_team}"}
+
+    # Get scoring distributions for simulation
+    home_scoring = get_team_scoring_stats(request.home_team)
+    away_scoring = get_team_scoring_stats(request.away_team)
+
+    if not home_scoring or not away_scoring:
+        return {"error": "Could not get scoring stats for simulation"}
+
+    # ── Monte Carlo simulation ────────────────────────────────────────────────
+    SIMULATIONS = 1000
+
+    home_offense = home_scoring["pts_mean"]
+    home_defense = home_scoring["pts_allowed_mean"]
+    away_offense = away_scoring["pts_mean"]
+    away_defense = away_scoring["pts_allowed_mean"]
+
+    # Predicted score = blend of what team scores + what opponent allows
+    # Home court boost = +2.5 pts (empirical NBA average)
+    home_expected = ((home_offense + away_defense) / 2) + 2.5
+    away_expected = (away_offense + home_defense) / 2
+
+    home_std = home_scoring["pts_std"]
+    away_std = away_scoring["pts_std"]
+
+    np.random.seed(None)
+    home_scores = np.random.normal(home_expected, home_std, SIMULATIONS)
+    away_scores = np.random.normal(away_expected, away_std, SIMULATIONS)
+
+    # Clip to realistic NBA range
+    home_scores = np.clip(home_scores, 85, 155)
+    away_scores = np.clip(away_scores, 85, 155)
+
+    home_wins = int(np.sum(home_scores > away_scores))
+    home_win_pct = round(home_wins / SIMULATIONS * 100, 1)
+    away_win_pct = round(100 - home_win_pct, 1)
+
+    predicted_home = round(float(np.mean(home_scores)), 1)
+    predicted_away = round(float(np.mean(away_scores)), 1)
+    predicted_total = round(predicted_home + predicted_away, 1)
+    predicted_spread = round(predicted_home - predicted_away, 1)
+
+    if predicted_spread > 0:
+        spread_label = f"{request.home_team} -{abs(predicted_spread)}"
+        spread_favor = request.home_team
+    elif predicted_spread < 0:
+        spread_label = f"{request.away_team} -{abs(predicted_spread)}"
+        spread_favor = request.away_team
+    else:
+        spread_label = "PICK"
+        spread_favor = "EVEN"
+
+    return {
+        "home_team": request.home_team,
+        "away_team": request.away_team,
+        "predicted_home_score": predicted_home,
+        "predicted_away_score": predicted_away,
+        "predicted_total": predicted_total,
+        "predicted_spread": predicted_spread,
+        "spread_label": spread_label,
+        "spread_favor": spread_favor,
+        "home_win_probability": home_win_pct,
+        "away_win_probability": away_win_pct,
+        "simulations_run": SIMULATIONS,
+        "model_version": "2.0"
+    }
+
 @app.post("/predict")
 def predict_legacy(request: MatchupRequest):
     return predict_matchup(request)
