@@ -25,54 +25,104 @@ _supabase = None
 def get_supabase():
     global _supabase
     if _supabase is None:
-        url = os.getenv("SUPABASE_URL") or "https://qvhupmldwenihkxipeqi.supabase.co"
-        key = os.getenv("SUPABASE_KEY") or "sb_publishable_OC1q3aS2LqEpB7UU6y_Y3Q_vpojrHdT"
-
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
         _supabase = create_client(url, key)
     return _supabase
 
-class GameStats(BaseModel):
-    fg_pct: float
-    fg3_pct: float
-    ft_pct: float
-    reb: float
-    ast: float
-    stl: float
-    blk: float
-    tov: float
-    pf: float
+# ── Feature config (must match training) ─────────────────────────────────────
+ROLLING_FEATURES = [
+    'fg_pct', 'fg3_pct', 'ft_pct',
+    'reb', 'oreb', 'dreb',
+    'ast', 'stl', 'blk', 'tov', 'pf',
+    'pts', 'net_rating'
+]
+WINDOW = 15
 
 class MatchupRequest(BaseModel):
     home_team: str
     away_team: str
 
-def get_team_stats(team_abbr):
-    result = get_supabase().table("games")\
-        .select("fg_pct, fg3_pct, ft_pct, reb, ast, stl, blk, tov, pf")\
-        .ilike("team_abbreviation", team_abbr)\
-        .eq("season_id", "22024")\
-        .execute()
-    if not result.data:
-        return None
-    stats = result.data
-    return {
-        "fg_pct": sum(s["fg_pct"] for s in stats) / len(stats),
-        "fg3_pct": sum(s["fg3_pct"] for s in stats) / len(stats),
-        "ft_pct": sum(s["ft_pct"] for s in stats) / len(stats),
-        "reb": sum(s["reb"] for s in stats) / len(stats),
-        "ast": sum(s["ast"] for s in stats) / len(stats),
-        "stl": sum(s["stl"] for s in stats) / len(stats),
-        "blk": sum(s["blk"] for s in stats) / len(stats),
-        "tov": sum(s["tov"] for s in stats) / len(stats),
-        "pf": sum(s["pf"] for s in stats) / len(stats),
-    }
+def get_team_rolling_stats(team_abbr: str, before_date: str = None):
+    """
+    Returns rolling 15-game averages for a team.
+    If before_date is provided (YYYY-MM-DD), only uses games before that date.
+    """
+    sb = get_supabase()
 
-@app.get("/debug-env")
-def debug_env():
-    return {
-        "SUPABASE_URL": os.getenv("SUPABASE_URL", "NOT FOUND"),
-        "SUPABASE_KEY_LENGTH": len(os.getenv("SUPABASE_KEY", ""))
-    }
+    # Fetch recent games for this team — grab more than WINDOW so we have enough
+    query = (
+        sb.table("games")
+        .select("game_date, fg_pct, fg3_pct, ft_pct, reb, oreb, dreb, ast, stl, blk, tov, pf, pts, matchup, game_id")
+        .ilike("team_abbreviation", team_abbr)
+        .eq("season_id", "22024")
+        .order("game_date", desc=True)
+        .limit(WINDOW + 5)
+    )
+
+    if before_date:
+        query = query.lt("game_date", before_date)
+
+    result = query.execute()
+
+    if not result.data or len(result.data) < 5:
+        return None
+
+    games = result.data
+
+    # For net_rating we need opponent pts — fetch those too
+    game_ids = [g["game_id"] for g in games]
+    opp_result = (
+        sb.table("games")
+        .select("game_id, pts")
+        .in_("game_id", game_ids)
+        .not_.ilike("team_abbreviation", team_abbr)
+        .execute()
+    )
+    opp_pts_map = {r["game_id"]: r["pts"] for r in (opp_result.data or [])}
+
+    rows = []
+    for g in games:
+        opp_pts = opp_pts_map.get(g["game_id"])
+        net_rating = (g["pts"] - opp_pts) if opp_pts is not None else None
+        rows.append({
+            "fg_pct": g["fg_pct"],
+            "fg3_pct": g["fg3_pct"],
+            "ft_pct": g["ft_pct"],
+            "reb": g["reb"],
+            "oreb": g["oreb"],
+            "dreb": g["dreb"],
+            "ast": g["ast"],
+            "stl": g["stl"],
+            "blk": g["blk"],
+            "tov": g["tov"],
+            "pf": g["pf"],
+            "pts": g["pts"],
+            "net_rating": net_rating,
+        })
+
+    # Average across last WINDOW games (already sorted desc, so rows[0] is most recent)
+    avgs = {}
+    for feat in ROLLING_FEATURES:
+        vals = [r[feat] for r in rows if r[feat] is not None]
+        avgs[feat] = sum(vals) / len(vals) if vals else 0.0
+
+    return avgs
+
+def build_feature_vector(home_stats: dict, away_stats: dict) -> list:
+    """
+    Builds the feature vector in the same order used during training:
+    [diff_features..., raw_home_features..., is_home]
+    """
+    diff = [home_stats[f] - away_stats[f] for f in ROLLING_FEATURES]
+    raw_home = [home_stats[f] for f in ROLLING_FEATURES]
+    return diff + raw_home + [1]  # is_home = 1 for home team
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/today-games")
 def today_games():
@@ -98,47 +148,38 @@ def today_games():
     except Exception as e:
         return {"error": str(e), "games": []}
 
-@app.post("/predict")
-def predict(stats: GameStats):
-    features = [[
-        stats.fg_pct, stats.fg3_pct, stats.ft_pct,
-        stats.reb, stats.ast, stats.stl,
-        stats.blk, stats.tov, stats.pf
-    ]]
-    prob = model.predict_proba(features)[0]
-    return {
-        "win_probability": round(float(prob[1]) * 100, 1),
-        "loss_probability": round(float(prob[0]) * 100, 1)
-    }
-
 @app.post("/predict-matchup")
 def predict_matchup(request: MatchupRequest):
-    home_stats = get_team_stats(request.home_team)
-    away_stats = get_team_stats(request.away_team)
-    if not home_stats or not away_stats:
-        return {"error": "Could not find stats for one or both teams"}
-    home_features = [[
-        home_stats["fg_pct"], home_stats["fg3_pct"], home_stats["ft_pct"],
-        home_stats["reb"], home_stats["ast"], home_stats["stl"],
-        home_stats["blk"], home_stats["tov"], home_stats["pf"]
-    ]]
-    away_features = [[
-        away_stats["fg_pct"], away_stats["fg3_pct"], away_stats["ft_pct"],
-        away_stats["reb"], away_stats["ast"], away_stats["stl"],
-        away_stats["blk"], away_stats["tov"], away_stats["pf"]
-    ]]
-    home_prob = model.predict_proba(home_features)[0]
-    away_prob = model.predict_proba(away_features)[0]
-    home_win = round(float(home_prob[1]) * 100, 1)
-    away_win = round(float(away_prob[1]) * 100, 1)
-    total = home_win + away_win
+    home_stats = get_team_rolling_stats(request.home_team)
+    away_stats = get_team_rolling_stats(request.away_team)
+
+    if not home_stats:
+        return {"error": f"Could not find stats for {request.home_team}"}
+    if not away_stats:
+        return {"error": f"Could not find stats for {request.away_team}"}
+
+    features = build_feature_vector(home_stats, away_stats)
+    prob = model.predict_proba([features])[0]
+
+    home_win = round(float(prob[1]) * 100, 1)
+    away_win = round(float(prob[0]) * 100, 1)
+
     return {
-        "home_win_probability": round((home_win / total) * 100, 1),
-        "away_win_probability": round((away_win / total) * 100, 1),
+        "home_win_probability": home_win,
+        "away_win_probability": away_win,
         "home_stats": home_stats,
-        "away_stats": away_stats
+        "away_stats": away_stats,
+        "model_version": "2.0"
     }
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# Keep /predict endpoint for backwards compatibility (uses home team stats only, no matchup context)
+@app.post("/predict")
+def predict_legacy(request: MatchupRequest):
+    return predict_matchup(request)
+
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "SUPABASE_URL": os.getenv("SUPABASE_URL", "NOT FOUND"),
+        "SUPABASE_KEY_LENGTH": len(os.getenv("SUPABASE_KEY", ""))
+    }
