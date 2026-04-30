@@ -79,13 +79,21 @@ def today_games():
             game_date=date.today().strftime("%m/%d/%Y"),
             league_id="00"
         )
-        games = scoreboard.get_data_frames()[0]
+        df = scoreboard.get_data_frames()[0]
+        print("Columns:", df.columns.tolist())
         result = []
-        for _, game in games.iterrows():
+        for _, game in df.iterrows():
+            home = ""
+            away = ""
+            for col in df.columns:
+                if "HOME" in col and "ABBREV" in col:
+                    home = str(game[col])
+                if "VISIT" in col and "ABBREV" in col:
+                    away = str(game[col])
             result.append({
                 "game_id": str(game["GAME_ID"]),
-                "home_team": str(game["HOME_TEAM_ABBREVIATION"]) if "HOME_TEAM_ABBREVIATION" in game.index else "",
-                "away_team": str(game["VISITOR_TEAM_ABBREVIATION"]) if "VISITOR_TEAM_ABBREVIATION" in game.index else "",
+                "home_team": home,
+                "away_team": away,
                 "status": str(game["GAME_STATUS_TEXT"]),
             })
         return {"games": result}
