@@ -22,8 +22,7 @@ with open("nba_model.pkl", "rb") as f:
 # Supabase client
 supabase = create_client(
     os.getenv("SUPABASE_URL", "https://qvhupmldwenihkxipeqi.supabase.co"),
-    os.getenv("SUPABASE_KEY", "sb_publishable_OC1q3aS2LqEpB7UU6y_Y3Q_vpojrHdT
-")
+    os.getenv("SUPABASE_KEY", "sb_publishable_OC1q3aS2LqEpB7UU6y_Y3Q_vpojrHdT")
 )
 
 class GameStats(BaseModel):
