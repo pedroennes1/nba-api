@@ -5,3 +5,5 @@ scikit-learn
 numpy
 pydantic
 supabase
+nba_api
+pandas
