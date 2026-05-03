@@ -270,6 +270,48 @@ def predict_score(request: MatchupRequest):
 def predict_legacy(request: MatchupRequest):
     return predict_matchup(request)
 
+@app.get("/recent-games")
+def recent_games():
+    sb = get_supabase()
+    result = (
+        sb.table("games")
+        .select("team_abbreviation, pts, wl, matchup, game_date, game_id")
+        .eq("season_id", "22024")
+        .order("game_date", desc=True)
+        .limit(30)
+        .execute()
+    )
+    if not result.data:
+        return {"games": []}
+
+    # Pair home and away rows by game_id
+    games_map = {}
+    for row in result.data:
+        gid = row["game_id"]
+        if gid not in games_map:
+            games_map[gid] = {}
+        if "vs." in row["matchup"]:
+            games_map[gid]["home"] = row
+        else:
+            games_map[gid]["away"] = row
+
+    paired = []
+    for gid, teams in games_map.items():
+        if "home" in teams and "away" in teams:
+            paired.append({
+                "game_id": gid,
+                "home": teams["home"]["team_abbreviation"],
+                "homeScore": teams["home"]["pts"],
+                "away": teams["away"]["team_abbreviation"],
+                "awayScore": teams["away"]["pts"],
+                "status": "Final",
+                "date": teams["home"]["game_date"],
+            })
+
+    # Sort by date descending, take top 10
+    paired.sort(key=lambda x: x["date"], reverse=True)
+    return {"games": paired[:10]}
+
 @app.get("/debug-env")
 def debug_env():
     return {
