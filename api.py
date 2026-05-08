@@ -23,6 +23,7 @@ with open("nba_model.pkl", "rb") as f:
 _supabase = None
 
 BALLDONTLIE_KEY = os.getenv("BALLDONTLIE_KEY") or "1e22e8aa-e47c-462a-84fb-7e33b30f049b"
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY") or "28fd62b9b4b6485c8916e444d9ae2af2"
 
 def get_supabase():
     global _supabase
@@ -195,7 +196,6 @@ def live_scores():
                 period = game["period"]
                 game_time = (game.get("time") or "").strip()
 
-                # Skip games that haven't started
                 if home_score == 0 and away_score == 0 and period == 0:
                     continue
 
@@ -224,6 +224,59 @@ def live_scores():
         return {"games": results[:12]}
     except Exception as e:
         return {"error": str(e), "games": []}
+
+@app.get("/news")
+def get_news():
+    try:
+        response = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q": "NBA playoffs",
+                "sortBy": "publishedAt",
+                "pageSize": 6,
+                "language": "en",
+                "apiKey": NEWSAPI_KEY,
+            },
+            timeout=10
+        )
+        data = response.json()
+        articles = []
+        for a in data.get("articles", []):
+            # Skip articles without images or with removed content
+            if not a.get("urlToImage") or not a.get("description"):
+                continue
+            if "[Removed]" in (a.get("title") or ""):
+                continue
+            # Derive a category from the title/description
+            title = a.get("title", "").lower()
+            if any(w in title for w in ["playoff", "finals", "series", "game "]):
+                category = "Playoffs"
+            elif any(w in title for w in ["trade", "sign", "draft", "contract"]):
+                category = "Transactions"
+            elif any(w in title for w in ["stat", "analytic", "record", "triple"]):
+                category = "Analysis"
+            elif any(w in title for w in ["injur", "health", "return"]):
+                category = "Injury"
+            else:
+                category = "NBA"
+
+            # Format time
+            published = a.get("publishedAt", "")
+            articles.append({
+                "title": a.get("title", ""),
+                "description": a.get("description", ""),
+                "url": a.get("url", ""),
+                "image": a.get("urlToImage", ""),
+                "source": a.get("source", {}).get("name", ""),
+                "publishedAt": published,
+                "category": category,
+            })
+            if len(articles) >= 3:
+                break
+
+        return {"articles": articles}
+    except Exception as e:
+        return {"error": str(e), "articles": []}
 
 @app.get("/recent-games")
 def recent_games():
