@@ -97,7 +97,6 @@ def get_team_rolling_stats(team_abbr: str):
     return avgs
 
 def get_team_scoring_stats(team_abbr: str):
-    """Returns mean and std of points scored and allowed over last 20 games."""
     sb = get_supabase()
     result = (
         sb.table("games")
@@ -145,8 +144,9 @@ def health():
 @app.get("/today-games")
 def today_games():
     try:
+        today = date.today().strftime("%m/%d/%Y")
         scoreboard = scoreboardv2.ScoreboardV2(
-            game_date=date.today().strftime("%m/%d/%Y"),
+            game_date=today,
             league_id="00"
         )
         df = scoreboard.get_data_frames()[0]
@@ -162,9 +162,49 @@ def today_games():
                 "away_team": away_team,
                 "status": str(game["GAME_STATUS_TEXT"]),
             })
-        return {"games": result}
+        return {"games": result, "date_used": today, "raw_rows": len(df)}
     except Exception as e:
-        return {"error": str(e), "games": []}
+        return {"error": str(e), "games": [], "date_used": date.today().strftime("%m/%d/%Y")}
+
+@app.get("/recent-games")
+def recent_games():
+    sb = get_supabase()
+    result = (
+        sb.table("games")
+        .select("team_abbreviation, pts, wl, matchup, game_date, game_id")
+        .eq("season_id", "22024")
+        .order("game_date", desc=True)
+        .limit(30)
+        .execute()
+    )
+    if not result.data:
+        return {"games": []}
+
+    games_map = {}
+    for row in result.data:
+        gid = row["game_id"]
+        if gid not in games_map:
+            games_map[gid] = {}
+        if "vs." in row["matchup"]:
+            games_map[gid]["home"] = row
+        else:
+            games_map[gid]["away"] = row
+
+    paired = []
+    for gid, teams in games_map.items():
+        if "home" in teams and "away" in teams:
+            paired.append({
+                "game_id": gid,
+                "home": teams["home"]["team_abbreviation"],
+                "homeScore": teams["home"]["pts"],
+                "away": teams["away"]["team_abbreviation"],
+                "awayScore": teams["away"]["pts"],
+                "status": "Final",
+                "date": teams["home"]["game_date"],
+            })
+
+    paired.sort(key=lambda x: x["date"], reverse=True)
+    return {"games": paired[:10]}
 
 @app.post("/predict-matchup")
 def predict_matchup(request: MatchupRequest):
@@ -192,7 +232,6 @@ def predict_matchup(request: MatchupRequest):
 
 @app.post("/predict-score")
 def predict_score(request: MatchupRequest):
-    # Get rolling stats for win probability
     home_stats = get_team_rolling_stats(request.home_team)
     away_stats = get_team_rolling_stats(request.away_team)
 
@@ -201,14 +240,12 @@ def predict_score(request: MatchupRequest):
     if not away_stats:
         return {"error": f"Could not find stats for {request.away_team}"}
 
-    # Get scoring distributions for simulation
     home_scoring = get_team_scoring_stats(request.home_team)
     away_scoring = get_team_scoring_stats(request.away_team)
 
     if not home_scoring or not away_scoring:
         return {"error": "Could not get scoring stats for simulation"}
 
-    # ── Monte Carlo simulation ────────────────────────────────────────────────
     SIMULATIONS = 1000
 
     home_offense = home_scoring["pts_mean"]
@@ -216,8 +253,6 @@ def predict_score(request: MatchupRequest):
     away_offense = away_scoring["pts_mean"]
     away_defense = away_scoring["pts_allowed_mean"]
 
-    # Predicted score = blend of what team scores + what opponent allows
-    # Home court boost = +2.5 pts (empirical NBA average)
     home_expected = ((home_offense + away_defense) / 2) + 2.5
     away_expected = (away_offense + home_defense) / 2
 
@@ -228,7 +263,6 @@ def predict_score(request: MatchupRequest):
     home_scores = np.random.normal(home_expected, home_std, SIMULATIONS)
     away_scores = np.random.normal(away_expected, away_std, SIMULATIONS)
 
-    # Clip to realistic NBA range
     home_scores = np.clip(home_scores, 85, 155)
     away_scores = np.clip(away_scores, 85, 155)
 
@@ -269,48 +303,6 @@ def predict_score(request: MatchupRequest):
 @app.post("/predict")
 def predict_legacy(request: MatchupRequest):
     return predict_matchup(request)
-
-@app.get("/recent-games")
-def recent_games():
-    sb = get_supabase()
-    result = (
-        sb.table("games")
-        .select("team_abbreviation, pts, wl, matchup, game_date, game_id")
-        .eq("season_id", "22024")
-        .order("game_date", desc=True)
-        .limit(30)
-        .execute()
-    )
-    if not result.data:
-        return {"games": []}
-
-    # Pair home and away rows by game_id
-    games_map = {}
-    for row in result.data:
-        gid = row["game_id"]
-        if gid not in games_map:
-            games_map[gid] = {}
-        if "vs." in row["matchup"]:
-            games_map[gid]["home"] = row
-        else:
-            games_map[gid]["away"] = row
-
-    paired = []
-    for gid, teams in games_map.items():
-        if "home" in teams and "away" in teams:
-            paired.append({
-                "game_id": gid,
-                "home": teams["home"]["team_abbreviation"],
-                "homeScore": teams["home"]["pts"],
-                "away": teams["away"]["team_abbreviation"],
-                "awayScore": teams["away"]["pts"],
-                "status": "Final",
-                "date": teams["home"]["game_date"],
-            })
-
-    # Sort by date descending, take top 10
-    paired.sort(key=lambda x: x["date"], reverse=True)
-    return {"games": paired[:10]}
 
 @app.get("/debug-env")
 def debug_env():
