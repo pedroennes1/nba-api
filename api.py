@@ -6,7 +6,7 @@ import numpy as np
 import os
 import requests
 from supabase import create_client
-from datetime import date
+from datetime import date, timedelta
 
 app = FastAPI()
 
@@ -157,12 +157,10 @@ def today_games():
         for game in data.get("data", []):
             home = game["home_team"]["abbreviation"]
             away = game["visitor_team"]["abbreviation"]
-            status = game.get("status", "Today")
-            # Convert UTC time to readable status if game hasn't started
             if game["period"] == 0 and game["home_team_score"] == 0:
                 status = "Today"
-            elif game["period"] > 0:
-                status = f"Q{game['period']} {game.get('time', '')}"
+            elif game["period"] > 0 and game.get("time"):
+                status = f"Q{game['period']} {game['time']}"
             else:
                 status = "Final"
             result.append({
@@ -172,6 +170,47 @@ def today_games():
                 "status": status,
             })
         return {"games": result, "date_used": today}
+    except Exception as e:
+        return {"error": str(e), "games": []}
+
+@app.get("/live-scores")
+def live_scores():
+    try:
+        results = []
+        for days_ago in range(0, 5):
+            check_date = (date.today() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            response = requests.get(
+                f"https://api.balldontlie.io/v1/games?dates[]={check_date}&per_page=25",
+                headers={"Authorization": BALLDONTLIE_KEY},
+                timeout=10
+            )
+            data = response.json()
+            for game in data.get("data", []):
+                home_score = game["home_team_score"]
+                away_score = game["visitor_team_score"]
+                period = game["period"]
+                game_time = game.get("time") or ""
+                # Only include games that have started
+                if home_score > 0 or away_score > 0:
+                    if period >= 4 and game_time == "":
+                        status = "Final"
+                    elif period > 0:
+                        status = f"Q{period} {game_time}".strip()
+                    else:
+                        status = "Final"
+                    results.append({
+                        "home": game["home_team"]["abbreviation"],
+                        "homeScore": home_score,
+                        "away": game["visitor_team"]["abbreviation"],
+                        "awayScore": away_score,
+                        "status": status,
+                        "date": game["date"]
+                    })
+            if len(results) >= 8:
+                break
+
+        results.sort(key=lambda x: x["date"], reverse=True)
+        return {"games": results[:12]}
     except Exception as e:
         return {"error": str(e), "games": []}
 
