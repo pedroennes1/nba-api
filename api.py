@@ -4,8 +4,8 @@ from pydantic import BaseModel
 import pickle
 import numpy as np
 import os
+import requests
 from supabase import create_client
-from nba_api.stats.endpoints import scoreboardv2, leaguegamefinder
 from datetime import date
 
 app = FastAPI()
@@ -21,6 +21,8 @@ with open("nba_model.pkl", "rb") as f:
     model = pickle.load(f)
 
 _supabase = None
+
+BALLDONTLIE_KEY = os.getenv("BALLDONTLIE_KEY") or "1e22e8aa-e47c-462a-84fb-7e33b30f049b"
 
 def get_supabase():
     global _supabase
@@ -145,39 +147,33 @@ def health():
 def today_games():
     try:
         today = date.today().strftime("%Y-%m-%d")
-        finder = leaguegamefinder.LeagueGameFinder(
-            date_from_nullable=today,
-            date_to_nullable=today,
-            league_id_nullable="00"
+        response = requests.get(
+            f"https://api.balldontlie.io/v1/games?dates[]={today}",
+            headers={"Authorization": BALLDONTLIE_KEY},
+            timeout=10
         )
-        df = finder.get_data_frames()[0]
-
-        games_map = {}
-        for _, row in df.iterrows():
-            gid = str(row["GAME_ID"])
-            matchup = str(row["MATCHUP"])
-            team = str(row["TEAM_ABBREVIATION"])
-            if gid not in games_map:
-                games_map[gid] = {}
-            if "vs." in matchup:
-                games_map[gid]["home_team"] = team
-                games_map[gid]["status"] = "Today"
-            elif "@" in matchup:
-                games_map[gid]["away_team"] = team
-
+        data = response.json()
         result = []
-        for gid, g in games_map.items():
-            if "home_team" in g and "away_team" in g:
-                result.append({
-                    "game_id": gid,
-                    "home_team": g["home_team"],
-                    "away_team": g["away_team"],
-                    "status": g.get("status", "Today"),
-                })
-
-        return {"games": result, "date_used": today, "raw_rows": len(df)}
+        for game in data.get("data", []):
+            home = game["home_team"]["abbreviation"]
+            away = game["visitor_team"]["abbreviation"]
+            status = game.get("status", "Today")
+            # Convert UTC time to readable status if game hasn't started
+            if game["period"] == 0 and game["home_team_score"] == 0:
+                status = "Today"
+            elif game["period"] > 0:
+                status = f"Q{game['period']} {game.get('time', '')}"
+            else:
+                status = "Final"
+            result.append({
+                "game_id": str(game["id"]),
+                "home_team": home,
+                "away_team": away,
+                "status": status,
+            })
+        return {"games": result, "date_used": today}
     except Exception as e:
-        return {"error": str(e), "games": [], "date_used": str(date.today())}
+        return {"error": str(e), "games": []}
 
 @app.get("/recent-games")
 def recent_games():
