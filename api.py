@@ -157,12 +157,16 @@ def today_games():
         for game in data.get("data", []):
             home = game["home_team"]["abbreviation"]
             away = game["visitor_team"]["abbreviation"]
-            if game["period"] == 0 and game["home_team_score"] == 0:
-                status = "Today"
-            elif game["period"] > 0 and game.get("time"):
-                status = f"Q{game['period']} {game['time']}"
-            else:
+            game_time = game.get("time") or ""
+            period = game["period"]
+            if game_time.lower() == "final":
                 status = "Final"
+            elif period > 0 and game_time:
+                status = f"Q{period} {game_time}"
+            elif period > 0:
+                status = f"Q{period}"
+            else:
+                status = "Today"
             result.append({
                 "game_id": str(game["id"]),
                 "home_team": home,
@@ -177,7 +181,7 @@ def today_games():
 def live_scores():
     try:
         results = []
-        for days_ago in range(0, 5):
+        for days_ago in range(0, 6):
             check_date = (date.today() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
             response = requests.get(
                 f"https://api.balldontlie.io/v1/games?dates[]={check_date}&per_page=25",
@@ -189,23 +193,30 @@ def live_scores():
                 home_score = game["home_team_score"]
                 away_score = game["visitor_team_score"]
                 period = game["period"]
-                game_time = game.get("time") or ""
-                # Only include games that have started
-                if home_score > 0 or away_score > 0:
-                    if period >= 4 and game_time == "":
-                        status = "Final"
-                    elif period > 0:
-                        status = f"Q{period} {game_time}".strip()
-                    else:
-                        status = "Final"
-                    results.append({
-                        "home": game["home_team"]["abbreviation"],
-                        "homeScore": home_score,
-                        "away": game["visitor_team"]["abbreviation"],
-                        "awayScore": away_score,
-                        "status": status,
-                        "date": game["date"]
-                    })
+                game_time = (game.get("time") or "").strip()
+
+                # Skip games that haven't started
+                if home_score == 0 and away_score == 0 and period == 0:
+                    continue
+
+                if game_time.lower() == "final" or (period >= 4 and game_time == ""):
+                    status = "Final"
+                elif period > 0 and game_time and game_time.lower() != "final":
+                    status = f"Q{period} {game_time}"
+                elif period > 0:
+                    status = f"Q{period}"
+                else:
+                    status = "Final"
+
+                results.append({
+                    "home": game["home_team"]["abbreviation"],
+                    "homeScore": home_score,
+                    "away": game["visitor_team"]["abbreviation"],
+                    "awayScore": away_score,
+                    "status": status,
+                    "date": game["date"]
+                })
+
             if len(results) >= 8:
                 break
 
