@@ -5,7 +5,7 @@ import pickle
 import numpy as np
 import os
 from supabase import create_client
-from nba_api.stats.endpoints import scoreboardv2
+from nba_api.stats.endpoints import scoreboardv2, leaguegamefinder
 from datetime import date
 
 app = FastAPI()
@@ -144,27 +144,40 @@ def health():
 @app.get("/today-games")
 def today_games():
     try:
-        today = date.today().strftime("%m/%d/%Y")
-        scoreboard = scoreboardv2.ScoreboardV2(
-            game_date=today,
-            league_id="00"
+        today = date.today().strftime("%Y-%m-%d")
+        finder = leaguegamefinder.LeagueGameFinder(
+            date_from_nullable=today,
+            date_to_nullable=today,
+            league_id_nullable="00"
         )
-        df = scoreboard.get_data_frames()[0]
+        df = finder.get_data_frames()[0]
+
+        games_map = {}
+        for _, row in df.iterrows():
+            gid = str(row["GAME_ID"])
+            matchup = str(row["MATCHUP"])
+            team = str(row["TEAM_ABBREVIATION"])
+            if gid not in games_map:
+                games_map[gid] = {}
+            if "vs." in matchup:
+                games_map[gid]["home_team"] = team
+                games_map[gid]["status"] = "Today"
+            elif "@" in matchup:
+                games_map[gid]["away_team"] = team
+
         result = []
-        for _, game in df.iterrows():
-            gamecode = str(game["GAMECODE"])
-            teams_part = gamecode.split("/")[1] if "/" in gamecode else ""
-            away_team = teams_part[:3] if len(teams_part) >= 6 else ""
-            home_team = teams_part[3:] if len(teams_part) >= 6 else ""
-            result.append({
-                "game_id": str(game["GAME_ID"]),
-                "home_team": home_team,
-                "away_team": away_team,
-                "status": str(game["GAME_STATUS_TEXT"]),
-            })
+        for gid, g in games_map.items():
+            if "home_team" in g and "away_team" in g:
+                result.append({
+                    "game_id": gid,
+                    "home_team": g["home_team"],
+                    "away_team": g["away_team"],
+                    "status": g.get("status", "Today"),
+                })
+
         return {"games": result, "date_used": today, "raw_rows": len(df)}
     except Exception as e:
-        return {"error": str(e), "games": [], "date_used": date.today().strftime("%m/%d/%Y")}
+        return {"error": str(e), "games": [], "date_used": str(date.today())}
 
 @app.get("/recent-games")
 def recent_games():
