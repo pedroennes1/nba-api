@@ -367,6 +367,38 @@ def predict_score(request: MatchupRequest):
 def predict_legacy(request: MatchupRequest):
     return predict_matchup(request)
 
+@app.get("/highlights")
+def get_highlights():
+    try:
+        YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+        response = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "key": YOUTUBE_API_KEY,
+                "channelId": "UCWJ2lWNubArHWmf3FIHbfcQ",
+                "part": "snippet",
+                "order": "date",
+                "maxResults": 3,
+                "q": "highlights",
+                "type": "video",
+            },
+            timeout=10
+        )
+        data = response.json()
+        videos = []
+        for item in data.get("items", []):
+            vid_id = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            published = item["snippet"]["publishedAt"][:10]
+            videos.append({
+                "id": vid_id,
+                "title": title,
+                "label": f"{published} · NBA"
+            })
+        return {"videos": videos}
+    except Exception as e:
+        return {"error": str(e), "videos": []}
+    
 @app.get("/debug-env")
 def debug_env():
     return {
