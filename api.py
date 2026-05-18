@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pickle
@@ -33,7 +33,6 @@ def get_supabase():
         _supabase = create_client(url, key)
     return _supabase
 
-# ── Feature config (must match training) ─────────────────────────────────────
 ROLLING_FEATURES = [
     'fg_pct', 'fg3_pct', 'ft_pct',
     'reb', 'oreb', 'dreb',
@@ -57,10 +56,8 @@ def get_team_rolling_stats(team_abbr: str):
         .limit(WINDOW + 5)
     )
     result = query.execute()
-
     if not result.data or len(result.data) < 5:
         return None
-
     games = result.data
     game_ids = [g["game_id"] for g in games]
     opp_result = (
@@ -71,32 +68,20 @@ def get_team_rolling_stats(team_abbr: str):
         .execute()
     )
     opp_pts_map = {r["game_id"]: r["pts"] for r in (opp_result.data or [])}
-
     rows = []
     for g in games:
         opp_pts = opp_pts_map.get(g["game_id"])
         net_rating = (g["pts"] - opp_pts) if opp_pts is not None else None
         rows.append({
-            "fg_pct": g["fg_pct"],
-            "fg3_pct": g["fg3_pct"],
-            "ft_pct": g["ft_pct"],
-            "reb": g["reb"],
-            "oreb": g["oreb"],
-            "dreb": g["dreb"],
-            "ast": g["ast"],
-            "stl": g["stl"],
-            "blk": g["blk"],
-            "tov": g["tov"],
-            "pf": g["pf"],
-            "pts": g["pts"],
-            "net_rating": net_rating,
+            "fg_pct": g["fg_pct"], "fg3_pct": g["fg3_pct"], "ft_pct": g["ft_pct"],
+            "reb": g["reb"], "oreb": g["oreb"], "dreb": g["dreb"],
+            "ast": g["ast"], "stl": g["stl"], "blk": g["blk"],
+            "tov": g["tov"], "pf": g["pf"], "pts": g["pts"], "net_rating": net_rating,
         })
-
     avgs = {}
     for feat in ROLLING_FEATURES:
         vals = [r[feat] for r in rows if r[feat] is not None]
         avgs[feat] = sum(vals) / len(vals) if vals else 0.0
-
     return avgs
 
 def get_team_scoring_stats(team_abbr: str):
@@ -112,10 +97,8 @@ def get_team_scoring_stats(team_abbr: str):
     )
     if not result.data or len(result.data) < 5:
         return None
-
     pts_list = [r["pts"] for r in result.data if r["pts"] is not None]
     game_ids = [r["game_id"] for r in result.data]
-
     opp_result = (
         sb.table("games")
         .select("game_id, pts")
@@ -125,7 +108,6 @@ def get_team_scoring_stats(team_abbr: str):
     )
     opp_pts_map = {r["game_id"]: r["pts"] for r in (opp_result.data or [])}
     opp_pts_list = [opp_pts_map[r["game_id"]] for r in result.data if opp_pts_map.get(r["game_id"])]
-
     return {
         "pts_mean": float(np.mean(pts_list)),
         "pts_std": float(np.std(pts_list)),
@@ -195,10 +177,8 @@ def live_scores():
                 away_score = game["visitor_team_score"]
                 period = game["period"]
                 game_time = (game.get("time") or "").strip()
-
                 if home_score == 0 and away_score == 0 and period == 0:
                     continue
-
                 if game_time.lower() == "final" or (period >= 4 and game_time == ""):
                     status = "Final"
                 elif period > 0 and game_time and game_time.lower() != "final":
@@ -207,7 +187,6 @@ def live_scores():
                     status = f"Q{period}"
                 else:
                     status = "Final"
-
                 results.append({
                     "home": game["home_team"]["abbreviation"],
                     "homeScore": home_score,
@@ -216,22 +195,20 @@ def live_scores():
                     "status": status,
                     "date": game["date"]
                 })
-
             if len(results) >= 8:
                 break
-
         results.sort(key=lambda x: x["date"], reverse=True)
         return {"games": results[:12]}
     except Exception as e:
         return {"error": str(e), "games": []}
 
 @app.get("/news")
-def get_news():
+def get_news(q: str = Query(default="NBA playoffs")):
     try:
         response = requests.get(
             "https://newsapi.org/v2/everything",
             params={
-                "q": "NBA playoffs",
+                "q": q,
                 "sortBy": "publishedAt",
                 "pageSize": 6,
                 "language": "en",
@@ -242,12 +219,10 @@ def get_news():
         data = response.json()
         articles = []
         for a in data.get("articles", []):
-            # Skip articles without images or with removed content
             if not a.get("urlToImage") or not a.get("description"):
                 continue
             if "[Removed]" in (a.get("title") or ""):
                 continue
-            # Derive a category from the title/description
             title = a.get("title", "").lower()
             if any(w in title for w in ["playoff", "finals", "series", "game "]):
                 category = "Playoffs"
@@ -259,21 +234,17 @@ def get_news():
                 category = "Injury"
             else:
                 category = "NBA"
-
-            # Format time
-            published = a.get("publishedAt", "")
             articles.append({
                 "title": a.get("title", ""),
                 "description": a.get("description", ""),
                 "url": a.get("url", ""),
                 "image": a.get("urlToImage", ""),
                 "source": a.get("source", {}).get("name", ""),
-                "publishedAt": published,
+                "publishedAt": a.get("publishedAt", ""),
                 "category": category,
             })
             if len(articles) >= 3:
                 break
-
         return {"articles": articles}
     except Exception as e:
         return {"error": str(e), "articles": []}
@@ -291,7 +262,6 @@ def recent_games():
     )
     if not result.data:
         return {"games": []}
-
     games_map = {}
     for row in result.data:
         gid = row["game_id"]
@@ -301,7 +271,6 @@ def recent_games():
             games_map[gid]["home"] = row
         else:
             games_map[gid]["away"] = row
-
     paired = []
     for gid, teams in games_map.items():
         if "home" in teams and "away" in teams:
@@ -314,7 +283,6 @@ def recent_games():
                 "status": "Final",
                 "date": teams["home"]["game_date"],
             })
-
     paired.sort(key=lambda x: x["date"], reverse=True)
     return {"games": paired[:10]}
 
@@ -322,18 +290,14 @@ def recent_games():
 def predict_matchup(request: MatchupRequest):
     home_stats = get_team_rolling_stats(request.home_team)
     away_stats = get_team_rolling_stats(request.away_team)
-
     if not home_stats:
         return {"error": f"Could not find stats for {request.home_team}"}
     if not away_stats:
         return {"error": f"Could not find stats for {request.away_team}"}
-
     features = build_feature_vector(home_stats, away_stats)
     prob = model.predict_proba([features])[0]
-
     home_win = round(float(prob[1]) * 100, 1)
     away_win = round(float(prob[0]) * 100, 1)
-
     return {
         "home_win_probability": home_win,
         "away_win_probability": away_win,
@@ -346,47 +310,35 @@ def predict_matchup(request: MatchupRequest):
 def predict_score(request: MatchupRequest):
     home_stats = get_team_rolling_stats(request.home_team)
     away_stats = get_team_rolling_stats(request.away_team)
-
     if not home_stats:
         return {"error": f"Could not find stats for {request.home_team}"}
     if not away_stats:
         return {"error": f"Could not find stats for {request.away_team}"}
-
     home_scoring = get_team_scoring_stats(request.home_team)
     away_scoring = get_team_scoring_stats(request.away_team)
-
     if not home_scoring or not away_scoring:
         return {"error": "Could not get scoring stats for simulation"}
-
     SIMULATIONS = 1000
-
     home_offense = home_scoring["pts_mean"]
     home_defense = home_scoring["pts_allowed_mean"]
     away_offense = away_scoring["pts_mean"]
     away_defense = away_scoring["pts_allowed_mean"]
-
     home_expected = ((home_offense + away_defense) / 2) + 2.5
     away_expected = (away_offense + home_defense) / 2
-
     home_std = home_scoring["pts_std"]
     away_std = away_scoring["pts_std"]
-
     np.random.seed(None)
     home_scores = np.random.normal(home_expected, home_std, SIMULATIONS)
     away_scores = np.random.normal(away_expected, away_std, SIMULATIONS)
-
     home_scores = np.clip(home_scores, 85, 155)
     away_scores = np.clip(away_scores, 85, 155)
-
     home_wins = int(np.sum(home_scores > away_scores))
     home_win_pct = round(home_wins / SIMULATIONS * 100, 1)
     away_win_pct = round(100 - home_win_pct, 1)
-
     predicted_home = round(float(np.mean(home_scores)), 1)
     predicted_away = round(float(np.mean(away_scores)), 1)
     predicted_total = round(predicted_home + predicted_away, 1)
     predicted_spread = round(predicted_home - predicted_away, 1)
-
     if predicted_spread > 0:
         spread_label = f"{request.home_team} -{abs(predicted_spread)}"
         spread_favor = request.home_team
@@ -396,7 +348,6 @@ def predict_score(request: MatchupRequest):
     else:
         spread_label = "PICK"
         spread_favor = "EVEN"
-
     return {
         "home_team": request.home_team,
         "away_team": request.away_team,
